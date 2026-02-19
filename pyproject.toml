@@ -1,0 +1,33 @@
+[project]
+name = "tiny-agent"
+version = "0.1.0"
+description = "Tiny Agent - A minimal AI Agent Implementation in Python"
+readme = "README.md"
+
+authors = [{ name = "Rogelio Cedillo (rgcr)", email = "roger.dev@pm.me"}]
+
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+tiny-agent = "tiny_agent.cli:main"
+
+# project urls
+[project.urls]
+"Homepage" = "https://github.com/rgcr/tiny-agent"
+"Source Code" = "https://github.com/rgcr/tiny-agent"
+"Bug Reports" = "https://github.com/rgcr/tiny-agent/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["tiny_agent"]
+
