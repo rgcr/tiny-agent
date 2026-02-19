@@ -10,7 +10,6 @@
 """
 
 import json
-from datetime import datetime, timezone
 
 
 class StateManager(object):
@@ -18,10 +17,14 @@ class StateManager(object):
     and summary. Passed into every generate() call so providers
     can read and update it."""
 
+    MAX_DENIALS = 3
+
     def __init__(self):
         self.hypothesis = ""
         self.actions = []
         self.skills = []
+        self.tool_events = []
+        self.denial_count = 0
         self.summary = ""
         self.context_info = {}
 
@@ -40,6 +43,7 @@ class StateManager(object):
         if not text:
             return
 
+        from datetime import datetime, timezone
         timestamp = datetime.now(timezone.utc).isoformat()
         self.actions.append({"text": text, "timestamp": timestamp})
 
@@ -59,6 +63,32 @@ class StateManager(object):
             "name": name,
             "path": path,
             "truncated": truncated,
+        })
+
+    def add_denial(self):
+        """Increment the command denial counter."""
+
+        self.denial_count += 1
+
+    @property
+    def denials_exceeded(self):
+        """True when the denial cap has been reached."""
+
+        return self.denial_count >= self.MAX_DENIALS
+
+    def add_tool_event(self, name, args, status):
+        """Record a tool invocation for debugging.
+
+        Args:
+            name (str): Tool name that was called.
+            args (str): Arguments passed to the tool.
+            status (str): Result status ("ok", "error", "denied").
+        """
+
+        self.tool_events.append({
+            "name": name,
+            "args": args,
+            "status": status,
         })
 
     def set_summary(self, summary):
@@ -81,6 +111,23 @@ class StateManager(object):
         if error:
             self.context_info["error"] = str(error)
 
+    def snapshot(self):
+        """Return a dictionary representation of the state.
+
+        Returns:
+            dict: Captured hypotheses, actions, and summary.
+        """
+
+        return {
+            "hypothesis": self.hypothesis,
+            "skills": list(self.skills),
+            "tool_events": list(self.tool_events),
+            "actions": list(self.actions),
+            "denial_count": self.denial_count,
+            "summary": self.summary,
+            "context_info": dict(self.context_info),
+        }
+
     def context_block(self):
         """Return a compact summary for injection into the model context.
 
@@ -93,6 +140,14 @@ class StateManager(object):
         if self.hypothesis:
             parts.append(f"Working hypothesis: {self.hypothesis}")
 
+        if self.tool_events:
+            recent = self.tool_events[-5:]
+            lines = [f"  - {e['name']}({e['args']}) → {e['status']}" for e in recent]
+            parts.append("Recent tool calls:\n" + "\n".join(lines))
+
+        if self.denial_count:
+            parts.append(f"Command denials: {self.denial_count}/{self.MAX_DENIALS}")
+
         if self.summary:
             parts.append(f"Session summary: {self.summary}")
 
@@ -100,21 +155,6 @@ class StateManager(object):
             return ""
 
         return "## Agent State\n" + "\n".join(parts)
-
-    def snapshot(self):
-        """Return a dictionary representation of the state.
-
-        Returns:
-            dict: Captured hypothesis, actions, and summary.
-        """
-
-        return {
-            "hypothesis": self.hypothesis,
-            "skills": list(self.skills),
-            "actions": list(self.actions),
-            "summary": self.summary,
-            "context_info": dict(self.context_info),
-        }
 
     def print_snapshot(self):
         """Print the full state snapshot for debugging."""

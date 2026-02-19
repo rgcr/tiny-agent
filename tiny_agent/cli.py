@@ -15,17 +15,15 @@ import sys
 from tiny_agent.core.context import ContextManager, SYSTEM_PROMPT
 from tiny_agent.core.skills import SkillsManager
 from tiny_agent.core.state import StateManager
+from tiny_agent.core.tools import ToolSuite
 from tiny_agent.core.ai_providers import (
     LocalProvider,
     AnthropicProvider,
-    OpenAIProvider
+    OpenAIProvider,
 )
 from tiny_agent.core.messages import Role
 from tiny_agent.core.utils import (
-    colorize,
-    load_env_files,
-    parse_debug_flags,
-    debug_enabled,
+    colorize, load_env_files, parse_debug_flags, debug_enabled, tool_notifier,
 )
 
 
@@ -35,14 +33,19 @@ def main(argv=None):
     load_env_files()
     args = parse_args(argv)
 
+    tools = ToolSuite(root_dir=args.workspace)
     color_enabled = not args.no_color
     debug_flags = parse_debug_flags(args.debug)
+
+    notifier = lambda name, args: tool_notifier(name, args, color_enabled)
 
     provider = build_provider(
         args.provider,
         args.model,
         debug_enabled("requests", debug_flags),
         args.api_key,
+        tools,
+        notifier,
     )
 
     state_manager = StateManager()
@@ -230,10 +233,18 @@ def parse_args(argv):
         action="store_true",
         help="Disable the /skill command and skill loading",
     )
+    parser.add_argument(
+        "--workspace",
+        nargs="?",
+        const=".",
+        default=None,
+        help="Restrict tools to this directory (default: cwd when flag is present)",
+    )
     return parser.parse_args(argv if argv is not None else sys.argv[1:])
 
 
-def build_provider(provider_name, model, debug, api_key):
+def build_provider(provider_name, model, debug, api_key, tools=None,
+                    tool_notifier=None):
     """Instantiate the provider requested on the CLI."""
 
     normalized = (provider_name or "local").lower()
@@ -244,8 +255,10 @@ def build_provider(provider_name, model, debug, api_key):
     if normalized == "anthropic":
         return AnthropicProvider(
             api_key=api_key,
-            model=model or "claude-3-haiku-20240307",
+            model=model or "claude-sonnet-4-20250514",
             debug=debug,
+            tools=tools,
+            tool_notifier=tool_notifier,
         )
 
     if normalized == "openai":
@@ -253,6 +266,8 @@ def build_provider(provider_name, model, debug, api_key):
             api_key=api_key,
             model=model or "gpt-4o-mini",
             debug=debug,
+            tools=tools,
+            tool_notifier=tool_notifier,
         )
 
     raise ValueError(f"Unknown provider '{provider_name}'")

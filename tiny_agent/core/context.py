@@ -18,23 +18,29 @@ from .utils import approx_token_count
 
 SYSTEM_PROMPT = (
     "## System Instructions\n\n"
-    "You are a read-only engineering and sysadmin helper named 'Tiny Agent'.\n"
-    "Your role is to inspect problems, explain root causes, and show the user how\n"
-    "to fix them manually. Provide concise, step-by-step guidance, runnable\n"
-    "commands, and verification steps so the user can reproduce everything.\n\n"
+    "You are 'Tiny Agent', an engineering helper with inspection tools.\n"
+    "When a request implies checking this host, use your tools and report\n"
+    "what you find. For purely informational questions, answer from your\n"
+    "own knowledge without using tools.\n\n"
     "Rules:\n"
-    "- Begin every reply with a single line: [HYPOTHESIS: <your working theory about the user's intent>]\n"
-    "- Never modify files or run commands yourself. Describe what the user should do.\n"
-    "- Cite the files, commands, or config names you reference.\n"
-    "- When asked for examples, give concrete commands or code snippets the user can run.\n"
-    "- Keep answers focused: summarize the goal, outline the solution\n"
-    "- Ask the user to confirm when the solution worked or if follow-up is needed.\n"
-    "- Don't overthink the response; if the request is unclear, ask for more details.\n"
-    "- If a '## Conversation Summary' section is present, it contains a summary of\n"
-    "  earlier conversation that was trimmed. Use it as context for your replies.\n"
-    "- If a '## Skill:' section is present, it contains skill instructions loaded by\n"
-    "  the user. Skill instructions take priority over the rules above, except for\n"
-    "  the HYPOTHESIS line requirement and the rule to never modify files or run commands.\n"
+    "1. Start every reply with [HYPOTHESIS: ...].\n"
+    "2. Keep answers brief. Present commands on their own line with two inital spaces and a\n"
+    "   short comment above. No markdown formatting in responses.\n"
+    "3. Cite files and commands you reference. Quote real tool output,\n"
+    "   never invent results.\n"
+    "4. Tools: read_file, list_files, grep, run_command (never run\n"
+    "   destructive commands). run_command allows pipes (|) and fallbacks\n"
+    "   (||) but blocks ;, &&, $(), and backticks. Never wrap commands in\n"
+    "   bash -c or sh -c. Minimize tool calls by combining related checks:\n"
+    "   ps -eo pid,comm,args | egrep -i '(nginx|postgres|redis)'\n"
+    "   which docker || which python3 || echo not found\n"
+    "5. Treat ## Conversation Summary, ## Agent State, and ## Skill:\n"
+    "   blocks as binding context. Skills override these rules except\n"
+    "   for rule 1 and the non-destructive constraint.\n"
+    "6. If the user asks for something outside these limits, explain\n"
+    "   the restriction.\n"
+    "7. Ask follow-up questions only when needed to proceed.\n"
+    "Tone: practical and direct. Always end by asking the user to confirm success or provide more data if required"
 )
 
 
@@ -79,10 +85,16 @@ class ContextManager(object):
         self.messages = []
         self.summary = ""
 
-    def add_message(self, role, content):
+    def add_message(self, role, content, name=None, tool_calls=None, tool_call_id=None):
         """Append a normalized message to the context."""
 
-        message = Message(role=role, content=content)
+        message = Message(
+            role=role,
+            content=content,
+            name=name,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+        )
         self.messages.append(message)
         return message
 
@@ -91,13 +103,32 @@ class ContextManager(object):
 
         return list(self.messages)
 
-    def recent_messages(self, limit=MESSAGES_AFTER_SUMMARIZATION):
-        """Return the last ``limit`` non-system messages."""
+    def recent_messages(self, limit=5):
+        """Return the last ``limit`` chat turns with their tool messages.
 
-        recent = [msg for msg in self.messages if msg.role != Role.SYSTEM]
-        return list(recent[-limit:])
+        Counts only user messages and plain assistant replies (no tool_calls)
+        toward the limit. Tool-call assistant messages and tool results ride
+        along without consuming the quota.
+        """
 
-    def summary_plus_recent(self, limit=MESSAGES_AFTER_SUMMARIZATION):
+        non_system = [msg for msg in self.messages if msg.role != Role.SYSTEM]
+
+        # Walk backward, collecting messages until we have `limit` chat turns
+        result = []
+        turn_count = 0
+
+        for msg in reversed(non_system):
+            result.append(msg)
+            # Count only user and plain assistant (no tool_calls) as turns
+            if msg.role == Role.USER or (msg.role == Role.ASSISTANT and not msg.tool_calls):
+                turn_count += 1
+                if turn_count >= limit:
+                    break
+
+        result.reverse()
+        return result
+
+    def summary_plus_recent(self, limit=5):
         """Return system prompt, summary block (if any), and recent messages."""
 
         system_msgs = [msg for msg in self.messages if msg.role == Role.SYSTEM
@@ -158,33 +189,40 @@ class ContextManager(object):
         Triggers when the message count exceeds max_turns or when the
         approximate token count exceeds the threshold.  The provider is
         asked to summarize *before* older messages are dropped so that
-        context is never silently lost.
+        context is never silently lost. When state_manager is provided,
+        its context block is appended before summarization so tool
+        history and hypotheses are preserved.
         """
 
         if not provider:
             return
 
         chat_count = sum(
-            1 for msg in self.messages if msg.role != Role.SYSTEM
+            1 for msg in self.messages
+            if msg.role not in (Role.SYSTEM, Role.TOOL) and not msg.tool_calls
         )
-        token_count = sum(
-            approx_token_count(msg.content)
-            for msg in self.messages if msg.role != Role.SYSTEM
-        )
+        token_count = self._token_count()
         needs_trim = chat_count > self.max_turns
-        needs_summary = self._exceeds_token_threshold()
+        needs_summary = token_count >= self.token_limit
 
         if not needs_trim and not needs_summary:
             if state_manager:
                 state_manager.add_context_info(chat_count, token_count, summarized=False)
             return
 
-        summary_text = provider.summarize(self.get_context())
+        messages = self.get_context()
+        state_block = state_manager.context_block() if state_manager else ""
+
+        if state_block:
+            messages.append(Message(Role.SYSTEM, state_block))
+
+        summary_text, error = provider.summarize(messages)
 
         if state_manager:
             state_manager.add_context_info(
                 chat_count, token_count,
                 summarized=bool(summary_text),
+                error=error,
             )
 
         if not summary_text:
@@ -196,10 +234,8 @@ class ContextManager(object):
             msg for msg in self.messages
             if msg.role == Role.SYSTEM and not msg.content.startswith("## Conversation Summary")
         ]
-        recent = [
-            msg for msg in self.messages[-self.keep_recent:]
-            if msg.role != Role.SYSTEM
-        ]
+        recent = self.recent_messages(self.keep_recent)
+
         self.messages = system_messages
         self.messages.append(
             Message(Role.SYSTEM, f"## Conversation Summary\n{self.summary}")
@@ -207,9 +243,12 @@ class ContextManager(object):
 
         self.messages.extend(recent)
 
-    def _exceeds_token_threshold(self):
-        total = sum(
+    def _token_count(self):
+        """Return approximate token count for non-system messages."""
+        return sum(
             approx_token_count(msg.content)
             for msg in self.messages if msg.role != Role.SYSTEM
         )
-        return total >= self.token_limit
+
+    def _exceeds_token_threshold(self):
+        return self._token_count() >= self.token_limit

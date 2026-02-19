@@ -18,7 +18,9 @@ import requests
 from .context import ContextManager
 from .messages import Role
 
+
 _HYPOTHESIS_RE = re.compile(r"^\[HYPOTHESIS:\s*(.+?)\]\s*\n?", re.MULTILINE)
+
 
 DEFAULT_TIMEOUT = 60
 
@@ -31,8 +33,11 @@ class AIProvider(object):
     the request, parsing hypotheses, updating state, happens here.
     """
 
+    # avoid infinite loops of tool calls if the provider keeps asking for more
+    MAX_TOOL_LOOPS = 10
+
     def __init__(self, name, api_url=None, api_key=None, model=None,
-                 max_tokens=4096, timeout=DEFAULT_TIMEOUT, debug=False):
+                 max_tokens=4096, timeout=DEFAULT_TIMEOUT, debug=False, tools=None, tool_notifier=None):
         self.name = name
         self.api_url = api_url
         self.api_key = api_key
@@ -40,13 +45,15 @@ class AIProvider(object):
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.debug = debug
+        self.tools = tools
+        self.tool_notifier = tool_notifier
 
     def _api_headers(self):
         """Return provider-specific HTTP headers."""
 
         raise NotImplementedError
 
-    def _build_payload(self, context_manager):
+    def _build_payload(self, context_manager, state_block=""):
         """Transform internal messages into provider-specific payload."""
 
         raise NotImplementedError
@@ -90,59 +97,93 @@ class AIProvider(object):
         cleaned = text[:match.start()] + text[match.end():]
         return hypothesis, cleaned.strip()
 
+    def _notify_tool(self, name, args):
+        """Call the tool notifier callback if set."""
+
+        if self.tool_notifier:
+            self.tool_notifier(name, args)
+
+    def _handle_tool_calls(self, data, context_manager, state_manager):
+        """Process tool calls from the API response.
+
+        Returns:
+            bool: True if tool calls were handled (caller should loop).
+        """
+
+        return False
+
     def generate(self, context_manager, state_manager):
-        """Run one full turn: build the payload, call the API, parse the
-        reply, and update state with any hypothesis found in the response."""
+        """Run one full turn with tool call loop.
+
+        Builds the payload, calls the API, and if the response contains
+        tool calls, executes them, adds results to context, and re-calls
+        the API. Loops until the provider returns a final text reply or
+        the loop limit is reached.
+        """
 
         if not self.api_key:
             return f"{self.name} provider requires an API key"
 
-        payload = self._build_payload(context_manager)
-
-        if self.debug:
-            self._print_debug("request", payload)
-
-        try:
-            response = requests.post(
-                self.api_url,
-                headers=self._api_headers(),
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
+        for _ in range(self.MAX_TOOL_LOOPS):
+            state_block = state_manager.context_block()
+            payload = self._build_payload(context_manager, state_block=state_block)
 
             if self.debug:
-                self._print_debug("response", data)
-        except requests.RequestException as exc:
-            return f"{self.name} request failed: {exc}"
+                self._print_debug("request", payload)
 
-        summary = context_manager.summarized_context()
-        if summary:
-            state_manager.set_summary(summary)
+            try:
+                response = requests.post(
+                    self.api_url,
+                    headers=self._api_headers(),
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
 
-        state_manager.add_action(f"reply via {self.name}")
-        completion = self._extract_text(data)
+                if self.debug:
+                    self._print_debug("response", data)
+            except requests.RequestException as exc:
+                return f"{self.name} request failed: {exc}"
 
-        if not completion:
-            completion = f"{self.name}: no action or response"
+            if self._handle_tool_calls(data, context_manager, state_manager):
+                if state_manager.denials_exceeded:
+                    return "Command denial limit reached — stopping tool execution."
+                continue
 
-        hypothesis, completion = self._extract_hypothesis(completion)
-        if hypothesis:
-            state_manager.set_hypothesis(hypothesis)
+            # No tool calls — extract final text reply
+            summary = context_manager.summarized_context()
+            if summary:
+                state_manager.set_summary(summary)
 
-        return completion
+            state_manager.add_action(f"reply via {self.name}")
+            completion = self._extract_text(data)
+
+            if not completion:
+                completion = f"{self.name}: no action or response"
+
+            hypothesis, completion = self._extract_hypothesis(completion)
+            if hypothesis:
+                state_manager.set_hypothesis(hypothesis)
+
+            return completion
+
+        return f"{self.name}: tool loop limit reached"
 
     def summarize(self, messages):
         """Condense a list of messages into a short summary string.
-        Used by ContextManager when the conversation gets too long."""
+        Used by ContextManager when the conversation gets too long.
+
+        Returns:
+            tuple: (summary_text, error) where error is None on success.
+        """
 
         if not self.api_key:
-            return ""
+            return "", "no API key"
 
         transcript = "\n".join(msg.to_chunk() for msg in messages)
         if not transcript:
-            return ""
+            return "", "empty transcript"
 
         payload = self._build_summary_payload(transcript)
 
@@ -155,10 +196,15 @@ class AIProvider(object):
             )
             response.raise_for_status()
             data = response.json()
-        except requests.RequestException:
-            return ""
+        except requests.RequestException as exc:
+            return "", str(exc)
 
-        return self._extract_text(data)
+        text = self._extract_text(data)
+        if not text:
+            if self.debug:
+                self._print_debug("summarize-empty", data)
+            return "", f"empty response from API: {data}"
+        return text, None
 
 
 class LocalProvider(AIProvider):
@@ -172,7 +218,7 @@ class LocalProvider(AIProvider):
     def summarize(self, messages):
         transcript = "\n".join(msg.to_chunk() for msg in messages)
         if not transcript:
-            return ""
+            return "", "empty transcript"
 
         lines = transcript.splitlines()
         goal = next((line for line in lines if line.startswith("user")), "")
@@ -188,7 +234,7 @@ class LocalProvider(AIProvider):
         if len(summary_parts) == 1:
             summary_parts.append(f"- Transcript: {transcript[-200:]}")
 
-        return "\n".join(summary_parts)
+        return "\n".join(summary_parts), None
 
     def generate(self, context_manager, state_manager):
         """Return a heuristic response for the latest user message."""
@@ -248,13 +294,16 @@ class AnthropicProvider(AIProvider):
     the rest in the 'messages' array."""
 
     def __init__(
-        self, api_key=None, model="claude-3-haiku-20240307", max_tokens=4096, debug=False
+        self, api_key=None, model="claude-sonnet-4-20250514", max_tokens=4096,
+        debug=False, tools=None, tool_notifier=None
     ):
         super(AnthropicProvider, self).__init__(
             "anthropic", "https://api.anthropic.com/v1/messages",
             api_key,
             model, max_tokens,
-            debug=debug
+            debug=debug,
+            tools=tools,
+            tool_notifier=tool_notifier,
         )
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.model = model
@@ -270,7 +319,7 @@ class AnthropicProvider(AIProvider):
     def _build_summary_payload(self, transcript):
         return {
             "model": self.model,
-            "max_tokens": min(4096, self.max_tokens),
+            "max_tokens": min(2048, self.max_tokens),
             "system": "Summarize the following engineering conversation in a few bullet points (goals, progress, blockers).",
             "messages": [
                 {
@@ -280,8 +329,59 @@ class AnthropicProvider(AIProvider):
             ],
         }
 
-    def _build_payload(self, context_manager):
-        """Transform internal messages into Anthropic payload."""
+    def _handle_tool_calls(self, data, context_manager, state_manager):
+        """Handle Anthropic tool_use blocks."""
+
+        if not self.tools:
+            return False
+
+        stop_reason = data.get("stop_reason")
+        if stop_reason != "tool_use":
+            return False
+
+        content_blocks = data.get("content") or []
+        tool_use_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
+
+        if not tool_use_blocks:
+            return False
+
+        # extract assistant text from non-tool blocks
+        text_parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+        assistant_text = "\n".join(t for t in text_parts if t)
+
+        # normalize tool_use blocks into our format
+        tool_calls = []
+        for block in tool_use_blocks:
+            tool_calls.append({
+                "id": block.get("id"),
+                "type": "tool_use",
+                "name": block.get("name"),
+                "input": block.get("input") or {},
+            })
+
+        context_manager.add_message(
+            Role.ASSISTANT, assistant_text, tool_calls=tool_calls,
+        )
+
+        for block in tool_use_blocks:
+            name = block.get("name")
+            args = block.get("input") or {}
+            tool_id = block.get("id")
+
+            result = self.tools.execute(name, args, state_manager, self.tool_notifier)
+
+            context_manager.add_message(
+                Role.TOOL, result["output"], tool_call_id=tool_id,
+            )
+
+        return True
+
+    def _build_payload(self, context_manager, state_block=""):
+        """Transform normalized messages into Anthropic wire format.
+
+        Translates normalized tool_calls (assistant) and Role.TOOL
+        messages back into Anthropic's content-block arrays.
+        """
 
         messages = context_manager.context_slice(ContextManager.MODE_SUMMARY_PLUS_RECENT)
 
@@ -291,11 +391,42 @@ class AnthropicProvider(AIProvider):
         for message in messages:
             if message.role == Role.SYSTEM:
                 system_parts.append(message.content)
-            else:
+                continue
+
+            # assistant with tool_calls → content block array
+            if message.role == Role.ASSISTANT and message.tool_calls:
+                content = []
+                if message.content:
+                    content.append({"type": "text", "text": message.content})
+                for tc in message.tool_calls:
+                    content.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tc.get("input") or {},
+                    })
+                chat_messages.append({"role": "assistant", "content": content})
+                continue
+
+            # tool result → user message with tool_result block
+            if message.role == Role.TOOL and message.tool_call_id:
                 chat_messages.append({
-                    "role": message.role,
-                    "content": message.content,
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": message.tool_call_id,
+                        "content": message.content,
+                    }],
                 })
+                continue
+
+            chat_messages.append({
+                "role": str(message.role),
+                "content": message.content,
+            })
+
+        if state_block:
+            system_parts.append(state_block)
 
         payload = {
             "model": self.model,
@@ -305,6 +436,9 @@ class AnthropicProvider(AIProvider):
 
         if system_parts:
             payload["system"] = "\n".join(system_parts)
+
+        if self.tools:
+            payload["tools"] = self.tools.definitions("anthropic")
 
         return payload
 
@@ -325,13 +459,16 @@ class OpenAIProvider(AIProvider):
     into a flat 'messages' array, system messages included."""
 
     def __init__(
-        self, api_key=None, model="gpt-4o-mini", max_tokens=4096, debug=False
+        self, api_key=None, model="gpt-4o-mini", max_tokens=4096,
+        debug=False, tools=None, tool_notifier=None
     ):
         super(OpenAIProvider, self).__init__(
             "openai", "https://api.openai.com/v1/chat/completions",
             api_key,
             model, max_tokens,
             debug=debug,
+            tools=tools,
+            tool_notifier=tool_notifier,
         )
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.model = model
@@ -346,7 +483,7 @@ class OpenAIProvider(AIProvider):
     def _build_summary_payload(self, transcript):
         return {
             "model": self.model,
-            "max_tokens": min(4096, self.max_tokens),
+            "max_tokens": min(2048, self.max_tokens),
             "messages": [
                 {
                     "role": Role.SYSTEM,
@@ -356,30 +493,83 @@ class OpenAIProvider(AIProvider):
             ],
         }
 
-    def _build_payload(self, context_manager):
+    def _handle_tool_calls(self, data, context_manager, state_manager):
+        """Handle OpenAI-style tool_calls in the response."""
+
+        if not self.tools:
+            return False
+
+        choices = data.get("choices") or []
+        if not choices:
+            return False
+
+        message = choices[0].get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+
+        if not tool_calls:
+            return False
+
+        # Add the assistant message with tool_calls to context
+        context_manager.add_message(
+            Role.ASSISTANT,
+            message.get("content") or "",
+            tool_calls=tool_calls,
+        )
+
+        for call in tool_calls:
+            name = call.get("function", {}).get("name")
+            args = call.get("function", {}).get("arguments")
+            tool_id = call.get("id")
+
+            result = self.tools.execute(name, args, state_manager, self.tool_notifier)
+
+            context_manager.add_message(
+                Role.TOOL,
+                result["output"],
+                tool_call_id=tool_id,
+            )
+
+        return True
+
+    def _build_payload(self, context_manager, state_block=""):
         """Transform internal messages into OpenAI payload."""
 
         messages = context_manager.context_slice(ContextManager.MODE_SUMMARY_PLUS_RECENT)
 
-        system_messages = []
-        other_messages = []
+        chat_messages = []
         for message in messages:
             entry = {
                 "role": message.role,
                 "content": message.content,
             }
-            if message.role == Role.SYSTEM:
-                system_messages.append(entry)
-            else:
-                other_messages.append(entry)
+            if message.name:
+                entry["name"] = message.name
+            if message.tool_calls:
+                entry["tool_calls"] = message.tool_calls
+            if message.tool_call_id:
+                entry["tool_call_id"] = message.tool_call_id
+            chat_messages.append(entry)
 
-        chat_messages = system_messages + other_messages
+        if state_block:
+            # Insert state_block after system messages, before user content
+            insert_idx = 0
+            for i, entry in enumerate(chat_messages):
+                if entry["role"] == Role.SYSTEM:
+                    insert_idx = i + 1
+                else:
+                    break
+            chat_messages.insert(insert_idx, {"role": Role.SYSTEM, "content": state_block})
 
-        return {
+        payload = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "messages": chat_messages,
         }
+
+        if self.tools:
+            payload["tools"] = self.tools.definitions("openai")
+
+        return payload
 
     def _extract_text(self, data):
         """Extract reply text from OpenAI response."""

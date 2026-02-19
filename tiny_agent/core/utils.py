@@ -64,3 +64,9 @@ def debug_enabled(category, flags):
     """Check if a debug category is active."""
 
     return category in flags
+
+
+def tool_notifier(name, arguments, color_enabled):
+    """Print a tool invocation notice in gray."""
+
+    print(colorize(f"  [tool] {name} {arguments}", "gray", color_enabled))

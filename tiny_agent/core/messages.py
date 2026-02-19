@@ -17,6 +17,7 @@ class Role(str, Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    TOOL = "tool"
 
     def __str__(self):
         return self.value
@@ -42,11 +43,14 @@ class Role(str, Enum):
 
 
 class Message(object):
-    """A single chat message with a role and content."""
+    """A single chat message with a role, content, and optional name."""
 
-    def __init__(self, role, content):
+    def __init__(self, role, content, name=None, tool_calls=None, tool_call_id=None):
         self.role = Role.validate(role)
         self.content = content or ""
+        self.name = name
+        self.tool_calls = tool_calls
+        self.tool_call_id = tool_call_id
 
     def to_dict(self):
         """Return a serializable dictionary representation.
@@ -55,10 +59,21 @@ class Message(object):
             dict: Normalized structure with message metadata.
         """
 
-        return {
+        result = {
             "role": self.role,
             "content": self.content,
         }
+
+        if self.name:
+            result["name"] = self.name
+
+        if self.tool_calls:
+            result["tool_calls"] = self.tool_calls
+
+        if self.tool_call_id:
+            result["tool_call_id"] = self.tool_call_id
+
+        return result
 
     @classmethod
     def from_dict(cls, payload):
@@ -74,6 +89,9 @@ class Message(object):
         return cls(
             role=payload.get("role"),
             content=payload.get("content"),
+            name=payload.get("name"),
+            tool_calls=payload.get("tool_calls"),
+            tool_call_id=payload.get("tool_call_id"),
         )
 
     def __repr__(self):

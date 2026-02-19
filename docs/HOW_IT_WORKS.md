@@ -7,8 +7,8 @@ User Input
     |
     v
  ContextManager                  StateManager
-(message history,               (hypothesis, actions,
- context slicing,                summary, context_info)
+(message history,               (hypotheses, findings,
+ context slicing,                actions, summary)
  auto-summarization)                  ^
     |                                 |
     v                                 |
@@ -57,9 +57,7 @@ turns. Providers update it after every response.
 - **Summary** — mirrors the context summary so snapshots include it
 - **Context info** — tracks chat count, token count, and summarization status for debugging
 
-Run with `--debug state` to see the full state snapshot after each turn,
-or `--debug context` to see the message history. Combine with commas:
-`--debug state,context,requests`.
+Run with `--debug` to see the full state snapshot after each turn.
 
 ## Providers
 
@@ -87,3 +85,28 @@ The CLI (`cli.py`), it's main entry point, runs a loop that does the following:
 
 The loop also handles multiline input (`\`), paste mode (`/paste` +
 `/submit`), cancellation (`Ctrl+C`), and exit (`exit` / `quit`).
+
+## Skills
+
+> **Note:** This feature is only available in the `skills` branch.
+
+`SkillsManager` (`core/skills.py`) discovers and loads reusable skill
+files from `~/.tinyagent/skills/<name>/SKILL.md`.
+
+**Loading** — the `/skill` command in the REPL handles discovery and
+loading:
+
+- `/skill` — lists available skills, tagging ones already loaded
+- `/skill <name>` — loads the skill into context as a system message
+
+**Trimming** — skill content is capped at 4 KB to control token growth.
+The user is notified when truncation occurs.
+
+**Safety** — path traversal (`../`) is blocked, duplicate loads are
+skipped, and file system errors are caught without crashing the REPL.
+
+**Precedence** — skill instructions override general rules except the
+read-only constraint and mandatory hypothesis line.
+
+Pass `--disable-skills` to disable the feature entirely. Loaded skills
+are tracked in `StateManager` and visible with `--debug`.

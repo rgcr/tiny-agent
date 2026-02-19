@@ -8,8 +8,8 @@ to fit your needs. Each branch introduces a single concept:
   | Branch | Concept |
   |--------|---------|
   | [`main`](../../tree/main) | Core agent: REPL, context slicing, auto-summarization |
-  | > [`skills`](../../tree/skills) | `/skill` — inject reusable Markdown playbooks at runtime |
-  | [`tools-skills`](../../tree/tools-skills) | Tool execution — read files, grep, run commands |
+  | [`skills`](../../tree/skills) | `/skill` — inject reusable Markdown playbooks at runtime |
+  | > [`tools-skills`](../../tree/tools-skills) | Tool execution — read files, grep, run commands |
 
 
 - Start with `main` to understand the basics, then checkout feature branches to explore more.
@@ -173,4 +173,3 @@ This prints:
 ---
 
 © Rogelio Cedillo – Licensed under the [MIT License](LICENSE)
-
