@@ -7,8 +7,8 @@ User Input
     |
     v
  ContextManager                  StateManager
-(message history,               (hypotheses, findings,
- context slicing,                actions, summary)
+(message history,               (hypothesis, actions,
+ context slicing,                summary, context_info)
  auto-summarization)                  ^
     |                                 |
     v                                 |
@@ -40,22 +40,26 @@ They call `context_slice()` with a mode to get a filtered view:
 - `MODE_RECENT` — system messages + last N chat turns
 - `MODE_SUMMARY_PLUS_RECENT` — system prompt + summary + last N chat turns
 
-**Auto-summarization** — when the conversation gets too long (30 turns
+**Auto-summarization** — when the conversation gets too long (20 turns
 or ~20k tokens), the ContextManager asks the provider to summarize
 the older messages, stores the summary, and keeps only the system
-prompt, the summary, and the last 5 chat messages.
+prompt, the summary, and the last 5 chat turns. The `maybe_summarize()`
+method also updates `StateManager.context_info` with current chat count,
+token count, and summarization status.
 
 ## StateManager
 
 `StateManager` (`core/state.py`) tracks the agent's reasoning across
 turns. Providers update it after every response.
 
-- **Hypotheses** — keyed guesses about user intent (primary key is `"intent"`)
-- **Findings** — things the agent discovered, with optional references
-- **Actions** — what the agent did each turn (e.g. `"reply via anthropic"`)
+- **Hypothesis** — working guess about user intent
+- **Actions** — what the agent did each turn (e.g. `"reply via anthropic"`), with UTC timestamps
 - **Summary** — mirrors the context summary so snapshots include it
+- **Context info** — tracks chat count, token count, and summarization status for debugging
 
-Run with `--debug` to see the full state snapshot after each turn.
+Run with `--debug state` to see the full state snapshot after each turn,
+or `--debug context` to see the message history. Combine with commas:
+`--debug state,context,requests`.
 
 ## Providers
 

@@ -129,9 +129,9 @@ This prints:
 - State snapshots (hypothesis, actions, summary, context_info) after each turn
 
 
-<img width="435" alt="image" src="docs/assets/main_debug1.jpg" />
+<img width="435" alt="image" src="docs/assets/debug1.png" />
 
-<img width="460" alt="image" src="docs/assets/main_debug2.jpg" />
+<img width="460" alt="image" src="docs/assets/debug2.png" />
 
 
 ## Contributing
