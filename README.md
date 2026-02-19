@@ -5,10 +5,11 @@
 This project is designed as a reference implementation you can study, fork, or extend
 to fit your needs. Each branch introduces a single concept:
 
+
   | Branch | Concept |
   |--------|---------|
   | [`main`](../../tree/main) | Core agent: REPL, context slicing, auto-summarization |
-  | [`skills`](../../tree/skills) | `/skill` — inject reusable Markdown playbooks at runtime |
+  |  [`skills`](../../tree/skills) | `/skill` — inject reusable Markdown playbooks at runtime |
   | > [`tools-skills`](../../tree/tools-skills) | Tool execution — read files, grep, run commands |
 
 
@@ -16,15 +17,17 @@ to fit your needs. Each branch introduces a single concept:
 - Fork any branch as a starting point for your own project.
 - Supports multiple providers (`anthropic`, `openai`).
 
-## Skills Demo
+## Tools Demo
 
-![skills demo](docs/assets/demo-skills.gif)
+![tools demo](docs/assets/demo-tools.gif)
 
 
 ## What It Does
 - Acts as a **read-only** engineering helper: inspects problems, explains root causes, and shows you how to fix them manually
 
-- Normalized context messages
+- **Tool suite** (`read_file`, `list_files`, `grep`, `run_command`) for safe host inspection — all providers share normalized tool calls with centralized execution, state logging, and command safety (blocks dangerous operators, optional allowlist)
+
+- Normalized context messages across all providers (Anthropic, OpenAI)
 
 - Maintains a rolling conversation context (20-turn window) with automatic summarization when the turn count or token usage (~20k) is exceeded, keeping the 5 most recent turns after each summarization
 
@@ -34,15 +37,18 @@ to fit your needs. Each branch introduces a single concept:
   `<skill>/SKILL.md` (trimmed to ~4 KB) directly into the conversation as a
   `## Skill:` block. It stays opt-in and can be disabled via `--disable-skills`.
 
-## Project structure (Skills)
+## Project structure (Tools & Skills)
 ```
 tiny_agent/
   cli.py            # REPL loop and argument parsing
   core/
     messages.py     # Role enum, Message normalization
     context.py      # Message history, context slicing, summarization
+    tools.py        # ToolSuite: read_file, list_files, grep, run_command
+                    #   - workspace boundaries, command validation
+                    #   - centralized execution with state logging
     skills.py       # Skill discovery and loading from ~/.tinyagent/skills/
-    state.py        # Hypothesis, actions (with timestamps), context info, summary
+    state.py        # Hypothesis, actions, tool events, summary
     utils.py        # Shared helpers (colorize, token counting, env loading)
     ai_providers.py
       LocalProvider       # Offline heuristic provider (testing/prototyping)
@@ -58,6 +64,12 @@ calls the provider. The provider grabs a context slice, converts it to
 the right API format, sends the request, and updates the **StateManager**
 with any hypothesis or action from that turn. The reply goes back into
 the ContextManager and gets printed.
+
+When the provider requests tool calls, **ToolSuite** executes them with
+centralized argument parsing, command validation, and state logging. Tool
+results are added to context and the provider loops until it returns a
+final text reply. Dangerous shell operators (`;`, `&&`, `$()`) are blocked,
+and repeated denials (3 max) stop the tool loop.
 
 Commands like `/skill` are handled before the input reaches the provider.
 The **SkillsManager** loads the requested `SKILL.md` and injects it as a
@@ -112,13 +124,13 @@ See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for more detail.
 
 | Provider    | Default model             |
 |-------------|---------------------------|
-| `anthropic` | `claude-3-haiku-20240307` |
+| `anthropic` | `claude-sonnet-4-20250514` |
 | `openai`    | `gpt-4o-mini`             |
 | `local`     | N/A (offline provider for testing) |
 
 
 Override with `--model <slug>`.
-Example `--model claude-3-5-sonnet-20241022`
+Example `--model claude-sonnet-4-20250514`
 
 ## Usage Tips
 - Use `/paste` + `/submit` to paste multi-line prompts
@@ -154,12 +166,17 @@ tiny-agent --provider openai --debug
 This prints:
 - The full request payload sent to the provider
 - The raw JSON response
-- State snapshots (hypothesis, actions, summary, context_info) after each turn
+- State snapshots (hypothesis, actions, tool events, summary) after each turn
+
+**Tool denials** — if the agent tries a blocked command (e.g., using `;` or `&&`),
+you'll see `Tool denied: ...` in the output. After 3 denials the tool loop stops
+and the agent returns a final reply. Check the `tool_events` in `--debug` output
+to see what was attempted.
 
 
-<img width="435" alt="image" src="docs/assets/debug1.png" />
+<img width="435" alt="image" src="docs/assets/main_debug1.jpg" />
 
-<img width="460" alt="image" src="docs/assets/debug2.png" />
+<img width="460" alt="image" src="docs/assets/main_debug2.jpg" />
 
 
 ## Contributing
