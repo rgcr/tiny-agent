@@ -361,15 +361,19 @@ class OpenAIProvider(AIProvider):
 
         messages = context_manager.context_slice(ContextManager.MODE_SUMMARY_PLUS_RECENT)
 
-        chat_messages = []
+        system_messages = []
+        other_messages = []
         for message in messages:
             entry = {
                 "role": message.role,
                 "content": message.content,
             }
-            if message.name:
-                entry["name"] = message.name
-            chat_messages.append(entry)
+            if message.role == Role.SYSTEM:
+                system_messages.append(entry)
+            else:
+                other_messages.append(entry)
+
+        chat_messages = system_messages + other_messages
 
         return {
             "model": self.model,

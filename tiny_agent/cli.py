@@ -13,6 +13,7 @@ import argparse
 import sys
 
 from tiny_agent.core.context import ContextManager, SYSTEM_PROMPT
+from tiny_agent.core.skills import SkillsManager
 from tiny_agent.core.state import StateManager
 from tiny_agent.core.ai_providers import (
     LocalProvider,
@@ -20,7 +21,12 @@ from tiny_agent.core.ai_providers import (
     OpenAIProvider
 )
 from tiny_agent.core.messages import Role
-from tiny_agent.core.utils import colorize, load_env_files, parse_debug_flags, debug_enabled
+from tiny_agent.core.utils import (
+    colorize,
+    load_env_files,
+    parse_debug_flags,
+    debug_enabled,
+)
 
 
 def main(argv=None):
@@ -29,6 +35,7 @@ def main(argv=None):
     load_env_files()
     args = parse_args(argv)
 
+    color_enabled = not args.no_color
     debug_flags = parse_debug_flags(args.debug)
 
     provider = build_provider(
@@ -41,20 +48,21 @@ def main(argv=None):
     state_manager = StateManager()
     context_manager = ContextManager()
     context_manager.add_message(Role.SYSTEM, SYSTEM_PROMPT)
-
-    color_enabled = not args.no_color
+    skills_manager = SkillsManager()
 
     banner = f"""
                         Tiny Agent
- ================================================================
+ =============================================================
 
   [Provider: {provider.name} | Model: {getattr(provider, "model", "n/a")}]
-           __
-          / ')
-   .-^^^-/ /      - Use '\\' for multiline input
-__/       /       - /paste - paste mode (/submit to send request)
+
+                  - Use '\\' for multiline input
+           __     - /paste - paste mode (/submit to send request)
+          / ')    - /skill - list skill
+   .-^^^-/ /      - /skill <skillname> - load skill
+__/       /
 <__.|_|-|_|       - Type 'exit' or 'quit' to leave
- ================================================================
+ =============================================================
 """
     print(colorize(banner, "yellow", color_enabled))
 
@@ -87,6 +95,51 @@ __/       /       - /paste - paste mode (/submit to send request)
                 pasted.append(line)
 
             user_input = "\n".join(pasted)
+
+        # handle /skill command
+        if user_input == "/skill" or user_input.startswith("/skill "):
+            if args.disable_skills:
+                print(colorize("Skills are disabled.", "gray", color_enabled))
+                continue
+
+            parts = user_input.split(maxsplit=1)
+
+            if len(parts) == 1:
+                available = skills_manager.list_skills()
+                if not available:
+                    print(colorize("No skills found in ~/.tinyagent/skills/", "gray", color_enabled))
+                else:
+                    print(colorize("Available skills:", "gray", color_enabled))
+                    for s in available:
+                        tag = " (loaded)" if s in skills_manager.loaded else ""
+                        print(colorize(f"  - {s}{tag}", "gray", color_enabled))
+                continue
+
+            name = parts[1]
+
+            if name in skills_manager.loaded:
+                print(colorize(f"Skill '{name}' already loaded.", "gray", color_enabled))
+                continue
+
+            try:
+                content, path, truncated = skills_manager.load_skill(name)
+                context_manager.add_message(Role.SYSTEM, f"## Skill: {name}\n{content}")
+                state_manager.add_skill(name, path, truncated)
+                msg = f"Loaded skill '{name}'."
+                if truncated:
+                    msg += " (truncated to 4k)"
+                print(colorize(msg, "gray", color_enabled))
+            except FileNotFoundError:
+                print(colorize(
+                    f"Skill '{name}' not found. Use /skill to list available skills.",
+                    "gray", color_enabled,
+                ))
+            except (OSError, UnicodeDecodeError) as err:
+                print(colorize(
+                    f"Failed to load skill '{name}': {err}",
+                    "gray", color_enabled,
+                ))
+            continue
 
         # handle multiline input
         if user_input.endswith("\\"):
@@ -133,9 +186,11 @@ __/       /       - /paste - paste mode (/submit to send request)
 
         if debug_enabled("state", debug_flags):
             state_manager.print_snapshot()
+            print("")
 
         if debug_enabled("context", debug_flags):
             context_manager.print_context()
+            print("")
 
 
 def parse_args(argv):
@@ -162,12 +217,18 @@ def parse_args(argv):
         "--debug",
         nargs="?",
         const="all",
-        help="Debug categories: state, context, requests (comma-separated, or 'all')",
+        default=None,
+        help="Debug output: all, context, state, requests, or combine with commas (e.g. context,state)",
     )
     parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable ANSI coloring in output",
+    )
+    parser.add_argument(
+        "--disable-skills",
+        action="store_true",
+        help="Disable the /skill command and skill loading",
     )
     return parser.parse_args(argv if argv is not None else sys.argv[1:])
 

@@ -21,6 +21,7 @@ class StateManager(object):
     def __init__(self):
         self.hypothesis = ""
         self.actions = []
+        self.skills = []
         self.summary = ""
         self.context_info = {}
 
@@ -42,6 +43,24 @@ class StateManager(object):
         timestamp = datetime.now(timezone.utc).isoformat()
         self.actions.append({"text": text, "timestamp": timestamp})
 
+    def add_skill(self, name, path, truncated=False):
+        """Record a loaded skill to avoid duplicate loads.
+
+        Args:
+            name (str): Skill name.
+            path (str): Absolute path to the SKILL.md file.
+            truncated (bool): Whether the content was trimmed.
+        """
+
+        if any(s["name"] == name for s in self.skills):
+            return
+
+        self.skills.append({
+            "name": name,
+            "path": path,
+            "truncated": truncated,
+        })
+
     def set_summary(self, summary):
         """Persist the latest context summary.
 
@@ -62,6 +81,26 @@ class StateManager(object):
         if error:
             self.context_info["error"] = str(error)
 
+    def context_block(self):
+        """Return a compact summary for injection into the model context.
+
+        Only includes non-empty sections so the model isn't flooded
+        with blank state fields every turn.
+        """
+
+        parts = []
+
+        if self.hypothesis:
+            parts.append(f"Working hypothesis: {self.hypothesis}")
+
+        if self.summary:
+            parts.append(f"Session summary: {self.summary}")
+
+        if not parts:
+            return ""
+
+        return "## Agent State\n" + "\n".join(parts)
+
     def snapshot(self):
         """Return a dictionary representation of the state.
 
@@ -71,6 +110,7 @@ class StateManager(object):
 
         return {
             "hypothesis": self.hypothesis,
+            "skills": list(self.skills),
             "actions": list(self.actions),
             "summary": self.summary,
             "context_info": dict(self.context_info),

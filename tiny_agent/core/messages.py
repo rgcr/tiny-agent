@@ -42,12 +42,11 @@ class Role(str, Enum):
 
 
 class Message(object):
-    """A single chat message with a role, content, and optional name."""
+    """A single chat message with a role and content."""
 
-    def __init__(self, role, content, name=None):
+    def __init__(self, role, content):
         self.role = Role.validate(role)
         self.content = content or ""
-        self.name = name
 
     def to_dict(self):
         """Return a serializable dictionary representation.
@@ -59,7 +58,6 @@ class Message(object):
         return {
             "role": self.role,
             "content": self.content,
-            "name": self.name,
         }
 
     @classmethod
@@ -76,7 +74,6 @@ class Message(object):
         return cls(
             role=payload.get("role"),
             content=payload.get("content"),
-            name=payload.get("name"),
         )
 
     def __repr__(self):

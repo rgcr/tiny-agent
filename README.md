@@ -7,8 +7,8 @@ to fit your needs. Each branch introduces a single concept:
 
   | Branch | Concept |
   |--------|---------|
-  | > [`main`](../../tree/main) | Core agent: REPL, context slicing, auto-summarization |
-  | [`skills`](../../tree/skills) | `/skill` — inject reusable Markdown playbooks at runtime |
+  | [`main`](../../tree/main) | Core agent: REPL, context slicing, auto-summarization |
+  | > [`skills`](../../tree/skills) | `/skill` — inject reusable Markdown playbooks at runtime |
   | [`tools-skills`](../../tree/tools-skills) | Tool execution — read files, grep, run commands |
 
 
@@ -16,8 +16,9 @@ to fit your needs. Each branch introduces a single concept:
 - Fork any branch as a starting point for your own project.
 - Supports multiple providers (`anthropic`, `openai`).
 
-## Demo:
-![demo](docs/assets/demo.gif)
+## Skills Demo
+
+![skills demo](docs/assets/demo-skills.gif)
 
 
 ## What It Does
@@ -29,16 +30,18 @@ to fit your needs. Each branch introduces a single concept:
 
 - Offers a basic REPL with multiline input (`\\`), paste mode with `/paste` and `/submit` to send the request
 
+- `/skill` helper that lists skills under `~/.tinyagent/skills/` and loads
+  `<skill>/SKILL.md` (trimmed to ~4 KB) directly into the conversation as a
+  `## Skill:` block. It stays opt-in and can be disabled via `--disable-skills`.
 
-
-
-## Project structure
+## Project structure (Skills)
 ```
 tiny_agent/
   cli.py            # REPL loop and argument parsing
   core/
     messages.py     # Role enum, Message normalization
     context.py      # Message history, context slicing, summarization
+    skills.py       # Skill discovery and loading from ~/.tinyagent/skills/
     state.py        # Hypothesis, actions (with timestamps), context info, summary
     utils.py        # Shared helpers (colorize, token counting, env loading)
     ai_providers.py
@@ -55,6 +58,10 @@ calls the provider. The provider grabs a context slice, converts it to
 the right API format, sends the request, and updates the **StateManager**
 with any hypothesis or action from that turn. The reply goes back into
 the ContextManager and gets printed.
+
+Commands like `/skill` are handled before the input reaches the provider.
+The **SkillsManager** loads the requested `SKILL.md` and injects it as a
+system message so the provider picks it up in its next context slice.
 
 See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for more detail.
 
@@ -97,6 +104,9 @@ See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for more detail.
    - `--api-key` – inline API key for Anthropic/OpenAI
    - `--debug` – print debug info; accepts categories: `state`, `context`, `requests` (e.g. `--debug state,context`)
    - `--no-color` – disable colorized output
+   - `--disable-skills` – turn off the `/skill` helper (skills are on by default)
+
+
 
 ## Default Models
 
@@ -114,6 +124,24 @@ Example `--model claude-3-5-sonnet-20241022`
 - Use `/paste` + `/submit` to paste multi-line prompts
 - End a line with `\\` to keep typing on the next prompt
 - Hit `Ctrl+C` during a long request to cancel it without closing the agent loop
+- Use `/skill` to list available skills or `/skill <name>` to load
+  `~/.tinyagent/skills/<name>/SKILL.md` into the conversation. Loaded skills show
+  up as `## Skill:` blocks and are tracked in the debug snapshot.
+
+## Skills (new in this branch)
+
+Skills are optional snippets of guidance you curate yourself:
+
+1. Create a folder like `~/.tinyagent/skills/deploy/` and drop a `SKILL.md` in it
+   (Markdown, up to ~4 KB will be loaded per run).
+2. In the REPL, type `/skill` to see available folders.
+3. Use `/skill deploy` (or any other name) to inject the file into the chat as a
+   `## Skill: deploy` system block. The contents become part of the model prompt,
+   and `StateManager` records that the skill is active.
+4. Pass `--disable-skills` if you want to guarantee no skills are listed or
+   loaded for a given session.
+
+The LLM never auto-loads skills—it only reacts to what you insert via `/skill`.
 
 ## Troubleshooting
 

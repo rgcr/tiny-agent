@@ -32,6 +32,9 @@ SYSTEM_PROMPT = (
     "- Don't overthink the response; if the request is unclear, ask for more details.\n"
     "- If a '## Conversation Summary' section is present, it contains a summary of\n"
     "  earlier conversation that was trimmed. Use it as context for your replies.\n"
+    "- If a '## Skill:' section is present, it contains skill instructions loaded by\n"
+    "  the user. Skill instructions take priority over the rules above, except for\n"
+    "  the HYPOTHESIS line requirement and the rule to never modify files or run commands.\n"
 )
 
 
